@@ -1,5 +1,6 @@
 import asyncio
 import io
+import os
 from typing import List, Dict, Optional
 import sqlite3
 import json
@@ -81,16 +82,30 @@ llm = ChatOllama(model=model, base_url=base_url)
 # Initialize FAISS components
 dimension = 384  # Dimension for MiniLM
 index = faiss.IndexFlatL2(dimension)
-docstore = InMemoryDocstore({})  # Use InMemoryDocstore for storing documents
-index_to_docstore_id = {}  # Use a simple dictionary for mapping indices to docstore IDs
+docstore = InMemoryDocstore({})
+index_to_docstore_id = {}
 
-vector_store = FAISS(
-    embedding_function=embedding_model.encode,
-    index=index,
-    docstore=docstore,
-    index_to_docstore_id=index_to_docstore_id
-)
+# Load FAISS index if it exists
+FAISS_INDEX_PATH = "faiss_index.index"
 
+def save_faiss_index(vector_store):
+    """Save the FAISS index to disk."""
+    vector_store.save_local(FAISS_INDEX_PATH)
+
+def load_faiss_index():
+    """Load the FAISS index from disk."""
+    if os.path.exists(FAISS_INDEX_PATH):
+        return FAISS.load_local(FAISS_INDEX_PATH, embedding_model.encode, InMemoryDocstore({}), {})
+    return None
+vector_store = load_faiss_index()
+if vector_store is None:
+    # Create a new FAISS index if it doesn't exist
+    vector_store = FAISS(
+        embedding_function=embedding_model.encode,
+        index=index,
+        docstore=docstore,
+        index_to_docstore_id=index_to_docstore_id
+    )
 # Define request models
 class VideoRequest(BaseModel):
     video_url: str
@@ -200,16 +215,27 @@ async def store_embeddings(id: str, transcript: str, is_video: bool = True):
         if embeddings_exist(id):
             return  # Skip if already exists
             
-        # Generate and store embeddings
+        # Generate embeddings for the transcript
         embedding = embedding_model.encode(transcript)
+        
+        # Store embeddings in the metadata table
         store_embeddings_metadata(id, 'video' if is_video else 'pdf', transcript, embedding)
 
-        # Split and add to FAISS
+        # Split transcript into meaningful chunks
         chunks = [s.strip() for s in re.split(r'[.!?]+', transcript) if s.strip()]
+        if not chunks:
+            raise ValueError("No valid chunks extracted from transcript")
+
+        # Add chunks and embeddings to FAISS
         vector_store.add_texts(
             texts=chunks,
             metadatas=[{"source": 'video' if is_video else 'pdf'} for _ in chunks]
         )
+        
+        # Save the FAISS index to disk
+        save_faiss_index(vector_store)
+        
+        print(f"Added {len(chunks)} chunks to FAISS index.")  # Debug log
         
         return len(chunks)
         
@@ -271,14 +297,17 @@ async def generate_mcq_from_text(text: str) -> List[Dict]:
     try:
         # Retrieve relevant context using vector embeddings
         docs = vector_store.similarity_search(text, k=3)
+       # Debug log
+        
         if not docs:
+            print("No relevant documents found in FAISS index.")  # Debug log
             return []
 
         mcqs = []
         for doc in docs:
             try:
                 response = await mcq_chain.ainvoke({'text': doc.page_content})
-                print(response.content)
+
                 # Extract JSON from the model's response
                 json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
                 if not json_match:
