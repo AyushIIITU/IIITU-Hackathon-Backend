@@ -86,7 +86,7 @@ docstore = InMemoryDocstore({})
 index_to_docstore_id = {}
 
 # Load FAISS index if it exists
-FAISS_INDEX_PATH = "faiss_index.index"
+FAISS_INDEX_PATH = "faiss_index"
 
 def save_faiss_index(vector_store):
     """Save the FAISS index to disk."""
@@ -95,16 +95,17 @@ def save_faiss_index(vector_store):
 def load_faiss_index():
     """Load the FAISS index from disk."""
     if os.path.exists(FAISS_INDEX_PATH):
-        return FAISS.load_local(FAISS_INDEX_PATH, embedding_model.encode, InMemoryDocstore({}), {})
+        return FAISS.load_local(FAISS_INDEX_PATH, embedding_model.encode, allow_dangerous_deserialization=True)
     return None
+# Load FAISS index if it exists
 vector_store = load_faiss_index()
 if vector_store is None:
     # Create a new FAISS index if it doesn't exist
     vector_store = FAISS(
         embedding_function=embedding_model.encode,
-        index=index,
-        docstore=docstore,
-        index_to_docstore_id=index_to_docstore_id
+        index=faiss.IndexFlatL2(dimension),
+        docstore=InMemoryDocstore({}),
+        index_to_docstore_id={}
     )
 # Define request models
 class VideoRequest(BaseModel):
@@ -296,7 +297,7 @@ async def generate_mcq_from_text(text: str) -> List[Dict]:
     """
     try:
         # Retrieve relevant context using vector embeddings
-        docs = vector_store.similarity_search(text, k=3)
+        docs = vector_store.similarity_search(text, k=5)
        # Debug log
         
         if not docs:
